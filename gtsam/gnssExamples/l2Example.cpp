@@ -1,5 +1,5 @@
 /**
- *  @file   pppGraph.cpp
+ *  @file   l2Example.cpp
  *  @author Ryan Watson & Jason Gross
  *  @brief  Factor graph to process GNSS data. This example only handles pseudorange
 
@@ -26,14 +26,12 @@
 #include <gtsam/slam/PriorFactor.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/nonlinear/Marginals.h>
-#include <gtsam/insNavigation/InsData.h>
 #include <gtsam/gnssNavigation/GnssData.h>
 #include <gtsam/gnssNavigation/GnssTools.h>
 #include <gtsam/nonlinear/DoglegOptimizer.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
 #include <gtsam/gnssNavigation/FolderUtils.h>
 #include <gtsam/gnssNavigation/GnssPostfit.h>
-#include <gtsam/gnssNavigation/gnssStateVec.h>
 #include <gtsam/gnssNavigation/nonBiasStates.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/GaussNewtonOptimizer.h>
@@ -74,13 +72,12 @@ int main(int argc, char** argv) {
         bool writeENU, writeECEF, writeBias, loose, tight, robust = false, first_ob = true;
         int currKey=-1, trop=1, startEpoch=0, satKeyPrev=-1, sc=1, nThreads, startKey;
         int num_gps_factors=0, factorCount=0, lastStep, firstStep, initIter;
-        double measWeight;
-        string gnssFile, insFile, outputFile, residualTxtInit="initResidaul.txt";
+        double measWeight, percentFaulty;
+        string gnssFile, outputFile, residualTxtInit="initResidaul.txt";
         string residualTxtOut="finalResidual.txt",textExtension=".txt", strategy;
         string switchExtension = "Switch.txt", graphExtension=".dot", dir;
         vector<string> satIndexLiteral;
         vector<rnxData> data;
-        vector<insData> insData;
         vector<int> numFactors;
 
         cout.precision(10);
@@ -96,21 +93,23 @@ int main(int argc, char** argv) {
                 ("help,h", "Print help message")
                 ("gpsObs,i", po::value<string>(&gnssFile)->default_value(""),
                 "Input GNSS data file")
+                ("percentFaulty", po::value<double>(&percentFaulty)->default_value(0.0),
+                "Percentage of observations to add faults. (scale [0,1]) )")
                 ("outFile,o", po::value<string>(&outputFile)->default_value("initResults"),
                 "Write graph and solution to the specified file.")
                 ("firstStep,f", po::value<int>(&firstStep)->default_value(0),
                 "First step to process from the dataset file")
                 ("lastStep,l", po::value<int>(&lastStep)->default_value(-1),
                 "Last step to process, or -1 to process until the end of the dataset")
-                ("threads", po::value<int>(&nThreads)->default_value(-1),
+                ("threads", po::value<int>(&nThreads)->default_value(4),
                 "Number of threads, or -1 to use all processors")
                 ("noTrop", "Will turn residual troposphere estimation off. Troposphere will still be modeled.")
-                ("initIter",po::value<int>(&initIter)->default_value(100),
+                ("initIter",po::value<int>(&initIter)->default_value(10),
                 "Number of iterations before initial postfit data edit")
                 ("dir", po::value<string>(&dir)->default_value(""),
                 "Total path to store generated data")
                 ("elWeight,el", "Elevation angle dependant measuremnt weighting")
-                ("measWeight", po::value<double>(&measWeight)->default_value(15.0),
+                ("measWeight", po::value<double>(&measWeight)->default_value(3.0),
                 "Noise applied to each GNSS observable")
                 ("writeGraph",
                 "Write graph to text file. Do not write large graphs (i.e. Nodes>=100)")
@@ -163,7 +162,7 @@ int main(int argc, char** argv) {
         Point3 nomXYZ(856295.3346, -4843033.4111, 4048017.6649);
 
         double output_time = 0.0;
-        double rangeWeight = pow(3,2);
+        double rangeWeight = pow(measWeight,2);
 
         nonBiasStates initEst((gtsam::Vector(5) << 0,0,0,0,0).finished());
 
@@ -175,7 +174,9 @@ int main(int argc, char** argv) {
         noiseModel::Diagonal::shared_ptr nonBias_ProcessNoise = noiseModel::Diagonal::Sigmas((gtsam::Vector(5) << 3.0, 3.0, 3.0, 10, 1e-3).finished());
 
         // Read GNSS data
-        try { data = readGNSS(gnssFile); }
+        try {
+                data = readGNSSFaulty(gnssFile, 0.0, 20.0, percentFaulty);
+        }
         catch(std::exception& e)
         {
                 cout << red << "\n\n Cannot read GNSS data file " << endl;
@@ -198,7 +199,7 @@ int main(int argc, char** argv) {
         if ( lastStep < 0 ) { lastStep = get<0>(data.back()); }
 
         // Construct Graph --- Only Pseudorange factors
-        for(unsigned int i = startEpoch; i < data.size(); i++ ) {
+        for(unsigned int i = startEpoch; i < data.size()-1; i++ ) {
 
                 // Get the current epoch's observables
                 double gnssTime = get<0>(data[i]);
@@ -235,7 +236,7 @@ int main(int argc, char** argv) {
 
         // Optimize the graph
         LevenbergMarquardtParams params;
-        params.maxIterations = 50;
+        params.maxIterations = initIter;
         Values result = LevenbergMarquardtOptimizer(graph, initial_values, params).optimize();
 
         try {
